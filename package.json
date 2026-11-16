@@ -1,0 +1,7 @@
+{
+  "name": "voltgrid",
+  "private": true,
+  "version": "1.0.0",
+  "description": "VOLTGRID — a deterministic canvas tower defense game for make.fun",
+  "type": "module"
+}

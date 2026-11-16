@@ -1,125 +1,130 @@
-// Input: mouse picking, build/upgrade/sell actions, keyboard shortcuts.
-// Translates DOM events into World actions; owns no game rules.
+// VOLTGRID — keyboard and pointer control. Translates raw input into simulation actions.
 
-import { CANVAS, GRID } from './config.js';
+import { COLS, ROWS, TILE, FIELD_H } from './config.js';
+import { hudHitTest } from './render.js';
+import {
+  startGame,
+  startNextWave,
+  selectBuild,
+  clickCell,
+  upgradeSelected,
+  sellSelected,
+  notify,
+} from './world.js';
 
-export class Input {
-  constructor(canvas, world, sound) {
-    this.canvas = canvas;
-    this.world = world;
-    this.sound = sound;
-    this.hover = null;
-    this.buildKind = null;
-    this.selected = null;
-    this.onNextWave = null; // UI hook (button clicks)
-    this.onSound = null;
+/** Points the canvas at 768x648 and wires up keyboard + pointer handlers. */
+export function attachInput(canvas, getGame, hooks) {
+  const sound = hooks.sound;
 
-    canvas.addEventListener('mousemove', (e) => this.pick(e));
-    canvas.addEventListener('mouseleave', () => { this.hover = null; });
-    canvas.addEventListener('click', (e) => this.click(e));
-    window.addEventListener('keydown', (e) => this.key(e.key));
-  }
+  const toGame = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+    return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+  };
 
-  cellFromEvent(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) * CANVAS.width) / rect.width;
-    const y = ((e.clientY - rect.top) * CANVAS.height) / rect.height;
-    if (y >= GRID.height) return null; // HUD band
-    const col = Math.floor(x / GRID.cell);
-    const row = Math.floor(y / GRID.cell);
-    if (col < 0 || row < 0 || col >= GRID.cols || row >= GRID.rows) return null;
-    return { col, row, x, y };
-  }
+  const toggleSound = (game) => {
+    const on = sound.toggle();
+    game.mute = !on;
+    notify(game, on ? 'SOUND ON' : 'SOUND OFF');
+  };
 
-  pick(e) {
-    this.hover = this.cellFromEvent(e);
-  }
-
-  click(e) {
-    this.sound.unlock();
-    const cell = this.cellFromEvent(e);
-    const w = this.world;
-    if (w.state === 'title' || w.state === 'over' || w.state === 'victory') {
-      if (w.state === 'title') { w.reset(); }
-      else { w.reset(); }
-      w.startWave();
+  const handleAction = (game, action) => {
+    if (action === 'start') {
+      startGame(game);
       return;
     }
-    if (!cell) {
-      // Clicks in the HUD band hit the build chips.
-      this.clickHud(e);
+    if (game.phase === 'title') {
+      notify(game, 'PRESS ENTER TO DEPLOY');
       return;
     }
-    const existing = w.towerAt(cell.col, cell.row);
-    if (existing) {
-      this.selected = existing;
+    if (game.phase === 'over' || game.phase === 'victory') return;
+    if (action === 'upgrade') upgradeSelected(game);
+    else if (action === 'sell') sellSelected(game);
+    else if (action === 'next') startNextWave(game);
+    else if (action === 'mute') toggleSound(game);
+    else if (action.indexOf('build:') === 0) selectBuild(game, action.slice(6));
+  };
+
+  window.addEventListener('keydown', (event) => {
+    const game = getGame();
+    const code = event.code || '';
+    const key = (event.key || '').toLowerCase();
+    const is = (letter, digit) => code === letter || key === digit;
+    sound.unlock();
+
+    if (code === 'Enter' || code === 'NumpadEnter') {
+      event.preventDefault();
+      if (game.phase === 'title' || game.phase === 'over' || game.phase === 'victory') handleAction(game, 'start');
+      else if (game.phase === 'wavebreak') handleAction(game, 'next');
       return;
     }
-    if (this.buildKind) {
-      if (w.placeTower(this.buildKind, cell.col, cell.row)) {
-        this.sound.build();
-        this.onSound && this.onSound('build');
-      } else {
-        this.sound.click();
-      }
+    if (event.repeat) return;
+    if (is('Digit1', '1')) {
+      event.preventDefault();
+      handleAction(game, 'build:pulse');
+    } else if (is('Digit2', '2')) {
+      event.preventDefault();
+      handleAction(game, 'build:arc');
+    } else if (is('Digit3', '3')) {
+      event.preventDefault();
+      handleAction(game, 'build:rail');
+    } else if (is('KeyU', 'u')) {
+      event.preventDefault();
+      handleAction(game, 'upgrade');
+    } else if (is('KeyS', 's')) {
+      event.preventDefault();
+      handleAction(game, 'sell');
+    } else if (is('KeyN', 'n')) {
+      event.preventDefault();
+      handleAction(game, 'next');
+    } else if (is('KeyM', 'm')) {
+      event.preventDefault();
+      if (game.phase === 'over' || game.phase === 'victory' || game.phase === 'title') toggleSound(game);
+      else handleAction(game, 'mute');
+    } else if (code === 'Escape') {
+      game.selectedTower = null;
+      game.hover = null;
     }
-  }
+  });
 
-  clickHud(e) {
-    // Approximate: chips start at x=16 and step 126px, in TOWERS key order.
-    const rect = this.canvas.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) * CANVAS.width) / rect.width;
-    const y = ((e.clientY - rect.top) * CANVAS.height) / rect.height;
-    if (y < GRID.height + 40 || y > GRID.height + 72) return;
-    const kinds = Object.keys(TOWERS_REF);
-    for (let i = 0; i < kinds.length; i += 1) {
-      const cx = 16 + i * 126;
-      if (x >= cx && x <= cx + 118) {
-        this.setBuild(kinds[i]);
-        return;
-      }
+  canvas.addEventListener('pointermove', (event) => {
+    const game = getGame();
+    const point = toGame(event);
+    if (point.y >= FIELD_H) {
+      game.hover = null;
+      return;
     }
-  }
+    const col = Math.floor(point.x / TILE);
+    const row = Math.floor(point.y / TILE);
+    game.hover = col >= 0 && col < COLS && row >= 0 && row < ROWS ? { col, row } : null;
+  });
 
-  setBuild(kind) {
-    this.buildKind = kind === this.buildKind ? null : kind;
-    this.sound.click();
-  }
+  canvas.addEventListener('pointerleave', () => {
+    getGame().hover = null;
+  });
 
-  key(k) {
-    const w = this.world;
-    const lower = k.toLowerCase();
-    if (lower === '1') this.setBuild('pulse');
-    else if (lower === '2') this.setBuild('arc');
-    else if (lower === '3') this.setBuild('rail');
-    else if (lower === 'n') {
-      if (w.state === 'title') { w.reset(); w.startWave(); }
-      else if (w.state === 'between') { w.startWave(); }
-      else if (!w.waveActive && (w.state === 'playing')) w.startWave();
-    } else if (lower === 'u') {
-      const target = this.selected || this.hoverTower();
-      if (w.upgradeTower(target)) this.sound.upgrade();
-      else this.sound.click();
-    } else if (lower === 's') {
-      const target = this.selected || this.hoverTower();
-      if (target && w.sellTower(target)) this.sound.sell();
-      this.selected = null;
-    } else if (k === 'Enter') {
-      this.sound.unlock();
-      if (w.state === 'title') { w.reset(); w.startWave(); }
-      else if (w.state === 'over' || w.state === 'victory') { w.reset(); w.startWave(); }
-      else if (w.state === 'between') w.startWave();
-    } else if (lower === 'm') {
-      const on = this.sound.toggle();
-      this.onSound && this.onSound(on ? 'unmute' : 'mute');
+  canvas.addEventListener('pointerdown', (event) => {
+    if (typeof event.button === 'number' && event.button !== 0) return;
+    event.preventDefault();
+    sound.unlock();
+    const game = getGame();
+    if (game.phase === 'title' || game.phase === 'over' || game.phase === 'victory') return;
+    const point = toGame(event);
+    if (point.y >= FIELD_H) {
+      const hit = hudHitTest(point.x, point.y);
+      if (hit === null) return;
+      if (hit.kind === 'build') handleAction(game, `build:${hit.key}`);
+      else if (hit.kind === 'mute') toggleSound(game);
+      else handleAction(game, hit.kind);
+      return;
     }
-  }
+    const col = Math.floor(point.x / TILE);
+    const row = Math.floor(point.y / TILE);
+    clickCell(game, col, row);
+    game.hover = { col, row };
+  });
 
-  hoverTower() {
-    if (!this.hover) return null;
-    return this.world.towerAt(this.hover.col, this.hover.row);
-  }
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+  canvas.addEventListener('touchstart', (event) => event.preventDefault(), { passive: false });
 }
-
-// Imported lazily to avoid a cycle at module evaluation time.
-import { TOWERS as TOWERS_REF } from './config.js';

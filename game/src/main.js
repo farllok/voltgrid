@@ -1,53 +1,69 @@
-// Voltgrid entry point: canvas boot, game loop, and the ?shot= scene driver
-// that stages a title/play/end frame for the screenshots.
+// VOLTGRID — bootstrap. Chooses between the live game loop and a deterministic screenshot scene.
 
-import { CANVAS, STEP } from './config.js';
-import { Input } from './input.js';
-import { draw, screenOf } from './render.js';
+import { WIDTH, HEIGHT, STEP } from './config.js';
+import { createGame, updateWorld } from './world.js';
+import { drawFrame } from './render.js';
+import { attachInput } from './input.js';
 import { Sound } from './sound.js';
-import { World, EVENT_OVER, EVENT_VICTORY } from './world.js';
-import { stageShot } from './shots.js';
+import { runShot } from './shots.js';
 
-const canvas = document.getElementById('game');
-canvas.width = CANVAS.width;
-canvas.height = CANVAS.height;
-const ctx = canvas.getContext('2d');
-const sound = new Sound();
-const world = new World(1);
-const input = new Input(canvas, world, sound);
-
-const params = new URLSearchParams(location.search);
-const shotName = params.get('shot');
-const seed = Number(params.get('seed') ?? '1') || 1;
-
-// --- Screenshot scene mode: play forward deterministically, draw one frame.
-if (shotName) {
-  const staged = stageShot(shotName, world, seed, input);
-  draw(ctx, world, { screen: staged.screen, buildKind: staged.buildKind });
-  window.__shotReady = true; // the screenshot watcher polls for this
-} else {
-  // --- Live game loop
-  let last = performance.now();
-  let acc = 0;
-  let lastScreen = '';
-  function frame(now) {
-    acc += (now - last) / 1000;
-    last = now;
-    if (acc > 0.25) acc = 0.25;
-    while (acc >= STEP) {
-      const events = world.step(STEP);
-      if (events & EVENT_OVER) sound.defeat();
-      else if (events & EVENT_VICTORY) sound.victory();
-      acc -= STEP;
-    }
-    const screen = screenOf(world);
-    if (screen !== lastScreen) {
-      lastScreen = screen;
-      if (screen === 'between') sound.waveStart();
-    }
-    draw(ctx, world, { hover: input.hover, buildKind: input.buildKind, screen });
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
-  window.__gameReady = true;
+function readSeed(params) {
+  const raw = params.get('seed');
+  if (raw === null) return 1;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 1;
+  const clean = Math.floor(Math.abs(value)) >>> 0;
+  return clean === 0 ? 1 : clean;
 }
+
+function startInteractive(canvas, seed) {
+  const ctx = canvas.getContext('2d');
+  if (ctx === null) return;
+  const game = createGame(seed);
+  const sound = new Sound();
+  attachInput(canvas, () => game, { sound });
+
+  const drainEvents = () => {
+    if (game.events.length === 0) return;
+    for (const name of game.events) sound.play(name);
+    game.events.length = 0;
+  };
+
+  let last = performance.now();
+  let accumulator = 0;
+  const frame = (now) => {
+    let delta = (now - last) / 1000;
+    last = now;
+    if (!Number.isFinite(delta) || delta < 0) delta = 0;
+    if (delta > 0.25) delta = 0.25;
+    accumulator += delta;
+    let steps = 0;
+    while (accumulator >= STEP && steps < 10) {
+      updateWorld(game, STEP);
+      accumulator -= STEP;
+      steps += 1;
+    }
+    if (steps === 10) accumulator = 0;
+    drainEvents();
+    drawFrame(ctx, game);
+    window.requestAnimationFrame(frame);
+  };
+  window.requestAnimationFrame(frame);
+}
+
+function boot() {
+  const canvas = document.getElementById('game');
+  if (canvas === null) return;
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
+  const params = new URLSearchParams(window.location.search);
+  const shot = params.get('shot');
+  const seed = readSeed(params);
+  if (shot === 'start' || shot === 'play' || shot === 'end') {
+    runShot(shot, seed);
+    return;
+  }
+  startInteractive(canvas, seed);
+}
+
+boot();
