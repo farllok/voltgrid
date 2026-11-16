@@ -59,7 +59,7 @@ function boot() {
   const params = new URLSearchParams(window.location.search);
   const shot = params.get('shot');
   const seed = readSeed(params);
-  if (shot === 'start' || shot === 'play' || shot === 'end') {
+  if (shot === 'start' || shot === 'play' || shot === 'end' || shot === 'victory') {
     runShot(shot, seed);
     return;
   }

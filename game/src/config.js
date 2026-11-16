@@ -104,7 +104,7 @@ export const ENEMIES = {
     reward: 7,
     leak: 1,
     armor: 0,
-    size: 12,
+    size: 13,
     color: '#ff6b81',
   },
   swarmer: {
@@ -115,7 +115,7 @@ export const ENEMIES = {
     reward: 4,
     leak: 1,
     armor: 0,
-    size: 9,
+    size: 10,
     color: COLORS.amber,
   },
   brute: {
@@ -126,7 +126,7 @@ export const ENEMIES = {
     reward: 14,
     leak: 2,
     armor: 0,
-    size: 17,
+    size: 22,
     color: '#ff4d6d',
   },
   shield: {
@@ -137,7 +137,7 @@ export const ENEMIES = {
     reward: 11,
     leak: 2,
     armor: 3,
-    size: 15,
+    size: 16,
     color: COLORS.steel,
   },
 };

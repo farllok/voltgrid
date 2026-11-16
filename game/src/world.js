@@ -73,7 +73,6 @@ export function createGame(seed = 1) {
 export function resetGame(game) {
   Object.assign(game, createGame(game.seed));
 }
-
 /** Short transient line shown above the field. */
 export function notify(game, text) {
   game.message = text;
@@ -108,12 +107,40 @@ function addRing(game, x, y, from, to, color, life) {
   game.effects.push({ kind: 'ring', x, y, r0: from, r1: to, life, maxLife: life, color });
 }
 
+/** A short bright bloom at the point of a hit. */
+function addFlash(game, x, y, color, size) {
+  game.effects.push({ kind: 'flash', x, y, r: size, life: 0.16, maxLife: 0.16, color });
+}
+
+/** Whirling shards left behind by a dying enemy. */
+function addDebris(game, x, y, color, count, power) {
+  for (let i = 0; i < count; i++) {
+    const angle = game.rng() * Math.PI * 2;
+    const speed = (40 + game.rng() * 120) * power;
+    const life = 0.45 + game.rng() * 0.5;
+    game.effects.push({
+      kind: 'debris',
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 34,
+      gravity: 190,
+      life,
+      maxLife: life,
+      size: 2 + game.rng() * 3.4,
+      rot: game.rng() * Math.PI * 2,
+      spin: (game.rng() - 0.5) * 10,
+      color,
+    });
+  }
+}
+
 function addFloat(game, x, y, text, color) {
   game.effects.push({ kind: 'float', x, y, text, color, life: 0.9, maxLife: 0.9 });
 }
 
 function pushBolt(game, points, color) {
-  game.effects.push({ kind: 'bolt', points, life: 0.22, maxLife: 0.22, color });
+  game.effects.push({ kind: 'bolt', points, life: 0.26, maxLife: 0.26, color });
 }
 
 /** Start a fresh run: reset, then launch wave 1. */
@@ -152,17 +179,21 @@ export function startNextWave(game) {
   return true;
 }
 
-function spawnEnemy(game, type) {
+/**
+ * Put one enemy on the lane. Waves call it with a type only; screenshot scenes pass
+ * `{ x, y, hpScale }` so a demo frame can stage a dense, already-engaged crowd.
+ */
+export function spawnEnemy(game, type, options = {}) {
   const def = ENEMIES[type];
-  if (def === undefined) return;
+  if (def === undefined) return null;
   const scale = Math.pow(WAVE_HP_GROWTH, game.wave - 1);
-  const hp = Math.max(1, Math.round(def.hp * scale));
+  const hp = Math.max(1, Math.round(def.hp * scale * (Number.isFinite(options.hpScale) ? options.hpScale : 1)));
   const reward = Math.max(1, Math.round(def.reward * Math.pow(WAVE_REWARD_GROWTH, game.wave - 1)));
-  game.enemies.push({
+  const enemy = {
     id: game.nextEnemyId++,
     type,
-    x: SPAWN_X,
-    y: LANE_Y,
+    x: Number.isFinite(options.x) ? options.x : SPAWN_X,
+    y: Number.isFinite(options.y) ? options.y : LANE_Y,
     hp,
     maxHp: hp,
     speed: def.speed,
@@ -170,10 +201,13 @@ function spawnEnemy(game, type) {
     reward,
     leak: def.leak,
     t: 0,
+    flash: 0,
     dead: false,
     leaked: false,
     scored: false,
-  });
+  };
+  game.enemies.push(enemy);
+  return enemy;
 }
 
 export function towerAt(game, col, row) {
@@ -329,6 +363,7 @@ function damageEnemy(game, enemy, amount) {
   if (enemy.dead) return;
   const dealt = Math.max(1, amount - enemy.armor);
   enemy.hp -= dealt;
+  enemy.flash = 1;
   if (enemy.hp <= 0) enemy.dead = true;
 }
 
@@ -382,6 +417,27 @@ function fireProjectile(game, tower, stats, target) {
   emit(game, tower.type === 'rail' ? 'shoot:rail' : 'shoot:pulse');
 }
 
+/** A zig-zag path between the given anchors, so a chain lightning bolt reads as electricity. */
+function jaggedPath(points, rng) {
+  if (points.length < 2) return points;
+  const out = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const steps = Math.max(2, Math.min(7, Math.round(length / 24)));
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const offset = (rng() - 0.5) * Math.min(20, 4 + length * 0.14);
+      out.push({ x: a.x + dx * t - (dy / length) * offset, y: a.y + dy * t + (dx / length) * offset });
+    }
+    out.push(b);
+  }
+  return out;
+}
+
 function fireChain(game, tower, stats, target) {
   const def = TOWERS[tower.type];
   const points = [{ x: tower.x, y: tower.y }];
@@ -396,8 +452,13 @@ function fireChain(game, tower, stats, target) {
     amount *= def.chainFalloff;
     current = nearestOther(game, current, def.chainRange, visited);
   }
-  pushBolt(game, points, def.color);
-  addSparkBurst(game, target.x, target.y, def.color, 6, 130);
+  pushBolt(game, jaggedPath(points, game.rng), def.color);
+  // Crackling sparks at every link of the chain, not just the first target.
+  for (let i = 1; i < points.length; i++) {
+    const point = points[i];
+    addFlash(game, point.x, point.y, def.color, i === 1 ? 18 : 13);
+    addSparkBurst(game, point.x, point.y, def.color, i === 1 ? 7 : 4, i === 1 ? 150 : 110);
+  }
   emit(game, 'shoot:arc');
 }
 
@@ -413,6 +474,7 @@ function updateEnemies(game, dt) {
   for (const enemy of game.enemies) {
     if (enemy.dead) continue;
     enemy.t += dt;
+    if (enemy.flash > 0) enemy.flash = Math.max(0, enemy.flash - dt * 6);
     enemy.x -= enemy.speed * dt;
     if (enemy.x <= CORE_X + 10) {
       enemy.dead = true;
@@ -466,12 +528,13 @@ function updateShots(game, dt) {
     const distance = Math.hypot(dx, dy);
     const step = shot.speed * dt;
     shot.trail.push({ x: shot.x, y: shot.y });
-    if (shot.trail.length > 7) shot.trail.shift();
+    if (shot.trail.length > 10) shot.trail.shift();
     if (distance <= step + 7) {
       if (target !== null && !target.dead) {
         damageEnemy(game, target, shot.damage);
-        addSparkBurst(game, shot.tx, shot.ty, shot.color, shot.kind === 'rail' ? 10 : 5, 150);
-        if (shot.kind === 'rail') addRing(game, shot.tx, shot.ty, 2, 22, shot.color, 0.25);
+        addFlash(game, shot.tx, shot.ty, shot.color, shot.kind === 'rail' ? 26 : 14);
+        addSparkBurst(game, shot.tx, shot.ty, shot.color, shot.kind === 'rail' ? 12 : 6, shot.kind === 'rail' ? 190 : 130);
+        if (shot.kind === 'rail') addRing(game, shot.tx, shot.ty, 2, 24, shot.color, 0.26);
         emit(game, 'impact');
       } else {
         addSparkBurst(game, shot.tx, shot.ty, shot.color, 3, 60);
@@ -501,9 +564,12 @@ function cleanupEnemies(game) {
     game.waveKills += 1;
     game.credits += enemy.reward;
     game.creditsEarned += enemy.reward;
-    addRing(game, enemy.x, enemy.y, 3, 26, def.color, 0.3);
-    addSparkBurst(game, enemy.x, enemy.y, def.color, 10, 160);
-    addFloat(game, enemy.x, enemy.y - 12, `+${enemy.reward}`, COLORS.green);
+    const heavy = enemy.type === 'brute';
+    addFlash(game, enemy.x, enemy.y, def.color, heavy ? 30 : 17);
+    addDebris(game, enemy.x, enemy.y, def.color, heavy ? 14 : enemy.type === 'shield' ? 10 : 7, heavy ? 1.25 : 1);
+    addRing(game, enemy.x, enemy.y, 3, heavy ? 34 : 26, def.color, 0.34);
+    addSparkBurst(game, enemy.x, enemy.y, def.color, heavy ? 14 : 10, heavy ? 190 : 160);
+    addFloat(game, enemy.x, enemy.y - 14, `+${enemy.reward}`, COLORS.green);
     emit(game, 'explosion');
   }
   game.enemies = alive;
@@ -520,6 +586,12 @@ function updateEffects(game, dt) {
       effect.y += effect.vy * dt;
       effect.vy += effect.gravity * dt;
       effect.vx *= 0.97;
+    } else if (effect.kind === 'debris') {
+      effect.x += effect.vx * dt;
+      effect.y += effect.vy * dt;
+      effect.vy += effect.gravity * dt;
+      effect.vx *= 0.985;
+      effect.rot += effect.spin * dt;
     } else if (effect.kind === 'float') {
       effect.y -= 26 * dt;
     }
@@ -544,6 +616,7 @@ function finishWave(game) {
     game.selectedTower = null;
     game.waveQueue = [];
     addRing(game, CORE_X, CORE_Y, 10, 120, COLORS.green, 1.1);
+    addFlash(game, CORE_X, CORE_Y, COLORS.green, 46);
     addSparkBurst(game, CORE_X, CORE_Y, COLORS.green, 24, 220);
     emit(game, 'victory');
   } else {
@@ -569,6 +642,9 @@ function destroyCore(game) {
   game.overReason = `The core fell on wave ${game.wave} of ${TOTAL_WAVES}.`;
   addRing(game, CORE_X, CORE_Y, 12, 150, COLORS.red, 1.2);
   addRing(game, CORE_X, CORE_Y, 8, 90, COLORS.orange, 0.9);
+  addFlash(game, CORE_X, CORE_Y, COLORS.orange, 52);
+  addDebris(game, CORE_X, CORE_Y, COLORS.red, 18, 1.5);
+  addDebris(game, CORE_X, CORE_Y, COLORS.orange, 10, 1.2);
   addSparkBurst(game, CORE_X, CORE_Y, COLORS.red, 30, 250);
   addSparkBurst(game, CORE_X, CORE_Y, COLORS.orange, 18, 180);
   emit(game, 'defeat');
