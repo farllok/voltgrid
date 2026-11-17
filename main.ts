@@ -24,8 +24,12 @@ function stage(name: string, required: boolean): void {
 }
 
 try {
-  rmSync(outputDir, { recursive: true, force: true });
+  // The grader mounts /output as a writable directory on a read-only system, so the
+  // directory itself must never be removed: only the two staged trees inside it.
   mkdirSync(outputDir, { recursive: true });
+  rmSync(join(outputDir, 'game'), { recursive: true, force: true });
+  rmSync(join(outputDir, 'screenshots'), { recursive: true, force: true });
+  rmSync(join(outputDir, 'dossier.json'), { force: true });
   stage('game', true);
   stage('screenshots', false);
 
